@@ -1,45 +1,33 @@
 import rclpy
+from rclpy.node import Node
 from std_msgs.msg import String
-from bosdyn.client import create_standard_sdk
-from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
-from bosdyn.client.lease import LeaseClient
-from bosdyn.client.estop import EstopClient
 
-def handle_keypress(data):
-    key = data.data
-    rclpy.loginfo(f"Received keypress: {key}")
+class KeySubscriber(Node):
+    def __init__(self):
+        super().__init__('key_subscriber')
+        self.subscription = self.create_subscription(
+            String,
+            'spot_keypress',
+            self.listener_callback,
+            10)
+        self.get_logger().info('Key Subscriber Node has been started.')
 
-    if key == 'a':
-        rclpy.loginfo("Stopping Spot.")
-        # Send stop command to Spot here
-        stop_command = RobotCommandBuilder.synchro_stop_command()
-        command_client.robot_command(command=stop_command)
-    elif key == 'f':
-        rclpy.loginfo("Spot: Stand up.")
-        # Command Spot to stand
-        stand_command = RobotCommandBuilder.synchro_stand_command()
-        command_client.robot_command(command=stand_command)
-    # Add more key-to-command mappings here
+    def listener_callback(self, msg):
+        self.get_logger().info(f'Received: {msg.data}')
+        # Here you would add the logic to interact with the Spot API based on the key press
+        if msg.data == 'a':
+            self.stop_spot()
 
-def spot_subscriber():
-    rclpy.init_node('spot_subscriber')
+    def stop_spot(self):
+        # Placeholder function to stop the robot
+        self.get_logger().info('Spot Stop Command Triggered')
 
-    # Setup Spot SDK and create clients
-    sdk = create_standard_sdk('SpotSubscriber')
-    robot = sdk.create_robot('ROBOT_IP')
-    robot.authenticate('USERNAME', 'PASSWORD')
-    robot.time_sync.wait_for_sync()
-
-    global command_client
-    command_client = robot.ensure_client(RobotCommandClient.default_service_name)
-
-    rclpy.Subscriber('keypress_topic', String, handle_keypress)
-    rclpy.loginfo("Spot subscriber ready and listening to keypresses.")
-
-    rclpy.spin()
+def main(args=None):
+    rclpy.init(args=args)
+    node = KeySubscriber()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
-    try:
-        spot_subscriber()
-    except rclpy.ROSInterruptException:
-        pass
+    main()
