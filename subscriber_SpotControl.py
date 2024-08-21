@@ -1,4 +1,3 @@
-''' SPOT API ("Back-End) '''
 
 import curses
 import io
@@ -11,7 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 
-from PIL import Image, ImageEnhance
+#from PIL import Image, ImageEnhance
 
 import bosdyn.api.basic_command_pb2 as basic_command_pb2
 import bosdyn.api.power_pb2 as PowerServiceProto
@@ -35,11 +34,6 @@ from bosdyn.util import duration_str, format_metric, secs_to_hms
 
 LOGGER = logging.getLogger()
 
-VELOCITY_BASE_SPEED = 0.5  # m/s
-VELOCITY_BASE_ANGULAR = 0.8  # rad/sec
-VELOCITY_CMD_DURATION = 0.6  # seconds
-COMMAND_INPUT_RATE = 0.1
-
 
 from dotenv import load_dotenv
 # Load the .env file
@@ -56,65 +50,23 @@ def _grpc_or_log(desc, thunk):
         return thunk()
     except (ResponseError, RpcError) as err:
         LOGGER.error('Failed %s: %s', desc, err)
-AsyncRobotStateAsyncPeriodicQuery
-
-# for exiting loops ('while' loops, etc)
-# class ExitCheck(object):
-    # """A class to help exiting a loop, also capturing SIGTERM to exit the loop."""
-
-    # def __init__(self):
-    #     self._kill_now = False
-    #     signal.signal(signal.SIGTERM, self._sigterm_handler)
-    #     signal.signal(signal.SIGINT, self._sigterm_handler)
-
-    # def __enter__(self):
-    #     return self
-
-    # def __exit__(self, _type, _value, _traceback):
-    #     return False
-
-    # def _sigterm_handler(self, _signum, _frame):
-    #     self._kill_now = True
-
-    # def request_exit(self):
-    #     """Manually trigger an exit (rather than sigterm/sigint)."""
-    #     self._kill_now = True
-
-    # @property
-    # def kill_now(self):
-    #     """Return the status of the exit checker indicating if it should exit."""
-    #     return self._kill_now
-
-
-class CursesHandler(logging.Handler):
-    """logging handler which puts messages into the curses interface"""
-
-    def __init__(self, wasd_interface):
-        super(CursesHandler, self).__init__()
-        self._wasd_interface = wasd_interface
-
-    def emit(self, record):
-        msg = record.getMessage()
-        msg = msg.replace('\n', ' ').replace('\r', '')
-        self._wasd_interface.add_message(f'{record.levelname:s} {msg:s}')
-
 
 class AsyncRobotState(AsyncPeriodicQuery):
 
     #  What is the passed parameter it is handling? :
-        """ query name, SDK client, timing of queries, handled by the state client passed to it """
+
+    # query name, SDK client, timing of queries, handled by the state client passed to it 
+
+    """Grab robot state.
+    Includes a few key states:
+    1. Battery State: Charge level, status, health
+    2. Motor State: Temperatures, power consumption, errors/warnings
+    3. Joint State: Positions, Velocitoes, efforts of the joints
+    4. Kinematic State: Robot's current pose and position in the world 
+    5. Sensor Data: Data from the robot's various sensors, such as cameras, LIDAR, and force sensors
+    6. E-Stop State
+    7. Power State: active power faults or warnings"""
     
-    """Grab robot state."""
-
-        """Includes a few key states:
-        1. Battery State: Charge level, status, health
-        2. Motor State: Temperatures, power consumption, errors/warnings
-        3. Joint State: Positions, Velocitoes, efforts of the joints
-        4. Kinematic State: Robot's current pose and position in the world 
-        5. Sensor Data: Data from the robot's various sensors, such as cameras, LIDAR, and force sensors
-        6. E-Stop State
-        7. Power State: active power faults or warnings"""
-
     def __init__(self, robot_state_client):
         super(AsyncRobotState, self).__init__('robot_state', robot_state_client, LOGGER,
                                               period_sec=0.2)
@@ -131,10 +83,10 @@ class SpotControlInterface(object):
 
         #gets the IP address from the robot from the 
         robot = sdk.create_robot(ROBOT_IP)
-        bosdyn.client.util.authenticate(robot, USERNAME, PASSWORD)
+        bosdyn.client.util.authenticate(robot)
 
         # Time-sync
-        time_sync_client = robot.ensure_client(TimeSyncClient.default_service_name)
+        robot.time_sync.wait_for_sync()
         bosdyn.client.util.sync_robot_time(robot)
 
         assert not robot.is_estopped(),'Robot is estopped. Please use an external E-Stop client to configure E-Stop.'
@@ -157,8 +109,6 @@ class SpotControlInterface(object):
         robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
         # Power client
         power_client = robot.ensure_client(PowerClient.default_service_name)
-        # Data acquisition client
-        data_acquisition_client = robot.ensure_client(DataAcquisitionClient.default_service_name)
 
         #initiate power on
         self._power_motors()
@@ -177,7 +127,7 @@ class SpotControlInterface(object):
         self._robot_id = None
         self._lease_keepalive = None
 
-######################################## Initializing/Shutting Down Methods #############################################
+    ################################### Initializing/Shutting Down Methods #############################################
     
     
     def start(self):
@@ -191,7 +141,9 @@ class SpotControlInterface(object):
             self._estop_endpoint.force_simple_setup(
             )  # Set this endpoint as the robot's sole estop.
 
-    ''' will need this after the program is requested to be exited '''
+        self.get_logger().info('Spot Connection Command Completed')
+    
+
     def shutdown(self):
         """Release control of robot as gracefully as possible."""
         self._sit()
@@ -200,16 +152,17 @@ class SpotControlInterface(object):
             self._estop_keepalive.shutdown()
         if self._lease_keepalive:
             self._lease_keepalive.shutdown()
+        
+        self.get_logger().info('Spot Shutdown Command Completed')
     
-        #DIRECTLY CALLED (FOR EXITING A WHILE LOOP)
-    # def _quit_program(self):
-        #     ''' Quits Program Via Exit Check Method '''
-        #     self._sit()
-        #     if self._exit_check is not None:
-        #         self._exit_check.request_exit()
-
     def _request_power_on(self):
-        '''  PLACE HOLDER FOR EXPLANATION '''
+        '''Sends an asynchronous request to power on the robot.
+        This method creates a power command request with the `REQUEST_ON` action, which is used to power 
+        on the robot's motors. The request is sent asynchronously to the robot's power client. This allows the robot to start its 
+        power-up sequence without blocking the rest of the program.
+        Returns: 
+            Future object: The future object that will be completed once the power-on request is processed. '''
+        
         request = PowerServiceProto.PowerCommandRequest.REQUEST_ON
         return self._power_client.power_command_async(request)
         
@@ -221,7 +174,7 @@ class SpotControlInterface(object):
             return
 
         self.robot.power_on(timeout_sec=20)
-        assert robot.is_powered_on(), 'Robot power on failed.'
+        assert self.robot.is_powered_on(), 'Robot power on failed.'
         self.motors_powered = True
 
     #DIRECTLY CALLED
@@ -237,7 +190,7 @@ class SpotControlInterface(object):
 
     #DIRECTLY CALLED
     def _toggle_power(self):
-        '''  PLACE HOLDER FOR EXPLANATION '''
+        '''  Checks for power state, if not available nothing occures, however if on or off the opposite action will occure (power on/off) '''
         power_state = self._power_state()
         if power_state is None:
             self.add_message('Could not toggle power because power state is unknown')
@@ -285,7 +238,9 @@ class SpotControlInterface(object):
 
         future = thunk()
         future.add_done_callback(on_future_done)
-
+        
+        ################################# Other Methods (Movement Related Etc.) #############################################
+    
     # start allowing robot commands to happen
     def _start_robot_command(self, desc, command_proto, end_time_secs=None):
 
@@ -294,9 +249,18 @@ class SpotControlInterface(object):
                                                         end_time_secs=end_time_secs)
 
         self._try_grpc(desc, _start_command) 
-    
 
-######################################## Other Methods (Movement Related Etc.) #############################################
+    def _self_right(self):
+        self._start_robot_command('self_right', RobotCommandBuilder.selfright_command())
+
+    def _sit(self):
+        self._start_robot_command('sit', RobotCommandBuilder.synchro_sit_command())
+
+    def _stand(self):
+        self._start_robot_command('stand', RobotCommandBuilder.synchro_stand_command())
+   
+    def _stop(self):
+        self._start_robot_command('stop', RobotCommandBuilder.stop_command())
 
 
 
@@ -305,31 +269,57 @@ class SpotControlInterface(object):
 
 
 
+################################################# ROS SUBSCRIPTION NODE ("Front-End" ######################################
 
-#########################################################################################################################################################################################################
-'''ROS SUBSCRIPTION NODE ("Front-End")'''
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import qos_profile_default
+from std_msgs.msg import String
+# from geometry_msgs.msg import Twist
+import sys, select, termios, tty
 
 class KeySubscriber(Node):
-    def __init__(self):
+    def __init__(self, spot_interface):
         super().__init__('key_subscriber')
         self.subscription = self.create_subscription(String,'spot_keypress',self.listener_callback,10)
-        self.get_logger().info('Key Subscriber Node has been started.')
+        self.get_logger().info('Keypress Subscriber Node has been started.')
+
+        self.spot_interface = spot_interface
+
+        self.spot_interface._command_dictionary = {
+            'w': self.spot_interface._stop,          # Stop moving
+            ' ': self.spot_interface._toggle_estop,  # Toggle estop
+            '\t': self.spot_interface.shutdown,      # Shut down and quit
+            'p': self.spot_interface._toggle_power,  # Toggle power
+            'l': self.spot_interface._toggle_lease,  # Toggle lease
+            's': self.spot_interface.start,          # Start
+            'r': self.spot_interface._self_right,    # Self right
+            'v': self.spot_interface._sit,           # Sit
+            'f': self.spot_interface._stand,         # Stand
+        }
 
     def listener_callback(self, msg):
-        self.get_logger().info(f'Received: {msg.data}')
-        # Here you would add the logic to interact with the Spot API based on the key press
-        if msg.data == 'a':
-            self.stop_spot()
+        """Run user commands at each update."""
 
-    def stop_spot(self):
-        # Placeholder function to stop the robot
-        self.get_logger().info('Spot Stop Command Triggered')
+        key = msg.data 
+
+        try:
+            cmd_function = self.spot_interface._command_dictionary[key]
+            cmd_function()
+
+        except KeyError:
+            if key and key != -1 and key < 256:
+                self.get_logger().info(f'Unrecognized keyboard command: \'{chr(key)}\'')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = KeySubscriber()
-    rclpy.spin(node)
-    node.destroy_node()
+
+    spot_interface = SpotControlInterface()
+    key_subscriber = KeySubscriber(spot_interface)
+
+    rclpy.spin(key_subscriber)
+
+    key_subscriber.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
