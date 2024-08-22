@@ -10,7 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 
-#from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance
 
 import bosdyn.api.basic_command_pb2 as basic_command_pb2
 import bosdyn.api.power_pb2 as PowerServiceProto
@@ -99,7 +99,6 @@ class SpotControlInterface(object):
         # E-Stop client
         try:
             self._estop_client = self._robot.ensure_client(EstopClient.default_service_name)
-            '''Need to know whats happening below, come back '''
             self._estop_endpoint = EstopEndpoint(self._estop_client, 'GNClient', 9.0)
         except:
             # Not the estop.
@@ -273,54 +272,118 @@ class SpotControlInterface(object):
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_default
+from rclpy.qos import QoSProfile
 from std_msgs.msg import String
-# from geometry_msgs.msg import Twist
 import sys, select, termios, tty
 
-class KeySubscriber(Node):
-    def __init__(self, spot_interface):
-        super().__init__('key_subscriber')
+# class KeySubscriber(Node):
+#     def __init__(self, spot_interface):
+#         super().__init__('key_subscriber')
+#         self.subscription = self.create_subscription(String,'spot_keypress',self.listener_callback,10)
+#         self.get_logger().info('Keypress Subscriber Node has been started.')
+
+#         self.spot_interface = spot_interface
+
+#         self.spot_interface._command_dictionary = {
+#             'w': self.spot_interface._stop,          # Stop moving
+#             ' ': self.spot_interface._toggle_estop,  # Toggle estop
+#             '\t': self.spot_interface.shutdown,      # Shut down and quit
+#             'p': self.spot_interface._toggle_power,  # Toggle power
+#             'l': self.spot_interface._toggle_lease,  # Toggle lease
+#             's': self.spot_interface.start,          # Start
+#             'r': self.spot_interface._self_right,    # Self right
+#             'v': self.spot_interface._sit,           # Sit
+#             'f': self.spot_interface._stand,         # Stand
+#         }
+
+#     def listener_callback(self, msg):
+#         """Run user commands at each update."""
+
+#         key = msg.data 
+
+#         try:
+#             cmd_function = self.spot_interface._command_dictionary[key]
+#             cmd_function()
+
+#         except KeyError:
+#             if key and key != -1 and key < 256:
+#                 self.get_logger().info(f'Unrecognized keyboard command: \'{chr(key)}\'')
+
+# def main(args=None):
+#     rclpy.init(args=args)
+
+#     spot_interface = SpotControlInterface()
+#     key_subscriber = KeySubscriber(spot_interface)
+
+#     rclpy.spin(key_subscriber)
+
+#     key_subscriber.destroy_node()
+#     rclpy.shutdown()
+
+#############################################################  CODE FOR TESTING ROS CONNECTION ###############################################
+class testing_ROS_Interface(Node):
+
+    def __init__(self):
+        # Initialize the ROS 2 Node
+        super().__init__('testing_ros_interface')  # Node name is 'testing_ros_interface'
+        self.get_logger().info('Testing_ROS_Interface init function works')
+
+    def _self_right(self):
+        self.get_logger().info('Testing_ROS_Interface self_right method called')
+
+    def _sit(self):
+        self.get_logger().info('Testing_ROS_Interface sit method called')
+
+    def stand(self):
+        print('Testing_ROS_Interface stand method called')
+
+    def _stop(self):
+        self.get_logger().info('Testing_ROS_Interface stop method called')
+
+class KeySubscriber(testing_ROS_Interface):
+    
+    def __init__(self):
+        super().__init__()
         self.subscription = self.create_subscription(String,'spot_keypress',self.listener_callback,10)
         self.get_logger().info('Keypress Subscriber Node has been started.')
 
-        self.spot_interface = spot_interface
+        #self.testing_R0S_Interface = testing_ROS_Interface
 
-        self.spot_interface._command_dictionary = {
-            'w': self.spot_interface._stop,          # Stop moving
-            ' ': self.spot_interface._toggle_estop,  # Toggle estop
-            '\t': self.spot_interface.shutdown,      # Shut down and quit
-            'p': self.spot_interface._toggle_power,  # Toggle power
-            'l': self.spot_interface._toggle_lease,  # Toggle lease
-            's': self.spot_interface.start,          # Start
-            'r': self.spot_interface._self_right,    # Self right
-            'v': self.spot_interface._sit,           # Sit
-            'f': self.spot_interface._stand,         # Stand
+        self.command_dictionary = {
+            'w': self._self_right,          # Stop moving
+            ' ': self._sit,  # Toggle estop
+            '\t': self.stand,      # Shut down and quit
         }
 
     def listener_callback(self, msg):
         """Run user commands at each update."""
-
+        
         key = msg.data 
+        self.get_logger().info(f'Received key: {key}') 
+        
+        self.get_logger().info('debug spot2')
+        cmd_function = self.command_dictionary[key]
+        
+        cmd_function()
 
-        try:
-            cmd_function = self.spot_interface._command_dictionary[key]
-            cmd_function()
-
-        except KeyError:
-            if key and key != -1 and key < 256:
-                self.get_logger().info(f'Unrecognized keyboard command: \'{chr(key)}\'')
+        # except KeyError:
+        #     if key and key != -1 and key < 256:
+        #         self.get_logger().info(f'Unrecognized keyboard command: \'{chr(key)}\'')
 
 def main(args=None):
+
     rclpy.init(args=args)
 
-    spot_interface = SpotControlInterface()
-    key_subscriber = KeySubscriber(spot_interface)
+    #test_R0S_Interface = testing_ROS_Interface()
+    key_subscriber = KeySubscriber()
 
     rclpy.spin(key_subscriber)
 
     key_subscriber.destroy_node()
     rclpy.shutdown()
+
+
+
 
 if __name__ == '__main__':
     main()

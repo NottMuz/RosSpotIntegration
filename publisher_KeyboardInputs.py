@@ -2,9 +2,8 @@
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_default
+from rclpy.qos import QoSProfile
 from std_msgs.msg import String
-# from geometry_msgs.msg import Twist
 import sys, select, termios, tty
 
 
@@ -44,30 +43,35 @@ def getKey():
     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
     return key
 
-def main(args=None):	
+def main(args=None):
+		
 	if args is None:
 		args = sys.argv
 
-	rclpy.init(args)
+	rclpy.init()
 
 	node = rclpy.create_node('KeyboardInputsForSpotControl')
-		
-	pub = node.create_publisher(String, 'spot_keypress',	qos_profile_default)
+
+	pub = node.create_publisher(String, 'spot_keypress', qos_profile = QoSProfile(depth=10))
 	
 	try:
 		print(msg)
+		input_command = String()
 		while(1):
-			input_command = String()
 			key = getKey()
-			if key in moveBindings.keys():
+			print('debug spot pub1')
+			if key in moveBindings:
+				print('debug spot pub2')
 				input_command.data = key
 			else:
 				if (key == '\x03'):
 					break
-						
-				pub.publish(input_command)
+			
+			pub.publish(input_command)
+			print('debug spot pub3')
 	except:
 		print('Keys were not able to be read')
+		
 	termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
  
