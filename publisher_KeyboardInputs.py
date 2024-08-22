@@ -33,6 +33,7 @@ moveBindings = {
 		'v': 6, # sit
 		'f': 7, # stand
 		's': 8, # start
+		'w': 9, # Stop moving
 	       }
 
 def getKey():
@@ -56,19 +57,15 @@ def main(args=None):
 	
 	try:
 		print(msg)
-		input_command = String()
 		while(1):
+			input_command = String()
 			key = getKey()
-			print('debug spot pub1')
-			if key in moveBindings:
-				print('debug spot pub2')
-				input_command.data = key
-			else:
-				if (key == '\x03'):
+
+			if (key == '\x03'):
 					break
-			
+			input_command.data = key
 			pub.publish(input_command)
-			print('debug spot pub3')
+
 	except:
 		print('Keys were not able to be read')
 		
