@@ -31,19 +31,21 @@ from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.time_sync import TimeSyncError
 from bosdyn.util import duration_str, format_metric, secs_to_hms
+from bosdyn.client.util import authenticate
 
 LOGGER = logging.getLogger()
 
 
 from dotenv import load_dotenv
-# Load the .env file
+
 load_dotenv()
-# Retrieve the values from the environment variables
+
 ROBOT_IP = os.getenv('ROBOT_IP')
-USERNAME = os.getenv('USERNAME')
+print(ROBOT_IP)
+USERNAME = os.getenv('SPOT_ROBOT_USERNAME')
+print(USERNAME)
 PASSWORD = os.getenv('PASSWORD')
-
-
+print(PASSWORD)
 
 def _grpc_or_log(desc, thunk):
     try:
@@ -51,90 +53,105 @@ def _grpc_or_log(desc, thunk):
     except (ResponseError, RpcError) as err:
         LOGGER.error('Failed %s: %s', desc, err)
 
+
+
+
+
 class AsyncRobotState(AsyncPeriodicQuery):
-
-    #  What is the passed parameter it is handling? :
-
-    # query name, SDK client, timing of queries, handled by the state client passed to it 
-
-    """Grab robot state.
-    Includes a few key states:
-    1. Battery State: Charge level, status, health
-    2. Motor State: Temperatures, power consumption, errors/warnings
-    3. Joint State: Positions, Velocitoes, efforts of the joints
-    4. Kinematic State: Robot's current pose and position in the world 
-    5. Sensor Data: Data from the robot's various sensors, such as cameras, LIDAR, and force sensors
-    6. E-Stop State
-    7. Power State: active power faults or warnings"""
-    
+  
     def __init__(self, robot_state_client):
         super(AsyncRobotState, self).__init__('robot_state', robot_state_client, LOGGER,
                                               period_sec=0.2)
 
     def _start_query(self):
-        return self._client.get_robot_state_async()
+        print("Starting robot state query.")
+        try:
+            future = self._client.get_robot_state_async()
+            if future:
+                result = future.result()
+                if result:
+                    print("Robot state query successful.")
+                else:
+                    print("Robot state query returned no result.")
+            else:
+                print("Failed to initiate async query.")
+            return future
+        except RpcError as e:
+            print(f"RPC Error during async query: {e}")
+            return None
 
 
-class SpotControlInterface(object):
+class SpotControlInterface():
 
-    def __init__(self, robot):
+    def __init__(self):
 
         sdk = bosdyn.client.create_standard_sdk('CircularPathingClient')
-
-        #gets the IP address from the robot from the 
         robot = sdk.create_robot(ROBOT_IP)
-        bosdyn.client.util.authenticate(robot)
+        self._robot = robot
+        
 
-        # Time-sync
-        robot.time_sync.wait_for_sync()
-        bosdyn.client.util.sync_robot_time(robot)
+        try:
+            robot.authenticate( USERNAME, PASSWORD)
+            #print('authenticate testing')
+            robot.start_time_sync()
+        except RpcError as err:
+            LOGGER.error('Failed to communicate with robot: %s', err)
+            #return False
 
-        assert not robot.is_estopped(),'Robot is estopped. Please use an external E-Stop client to configure E-Stop.'
 
-
+        # Power client
+        self._power_client = robot.ensure_client(PowerClient.default_service_name)
+        
         # Create the lease client and grab the lease
-        lease_client = robot.ensure_client(bosdyn.client.lease.LeaseClient.default_service_name)
+        self._lease_client = robot.ensure_client(bosdyn.client.lease.LeaseClient.default_service_name)
+        
         # Command client
-        command_client = robot.ensure_client(RobotCommandClient.default_service_name)
+        self._robot_command_client = robot.ensure_client(RobotCommandClient.default_service_name)
+        
         # E-Stop client
         try:
             self._estop_client = self._robot.ensure_client(EstopClient.default_service_name)
             self._estop_endpoint = EstopEndpoint(self._estop_client, 'GNClient', 9.0)
         except:
-            # Not the estop.
             self._estop_client = None
             self._estop_endpoint = None
-        # Robot state client
-        robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
-        # Power client
-        power_client = robot.ensure_client(PowerClient.default_service_name)
-
-        #initiate power on
-        self._power_motors()
-        self._robot_state_task = AsyncRobotState(self._robot_state_client)
-        self._lock = threading.Lock()
         
+        # Robot state client
+        self.robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
+        
+
+        self._robot_state_task = AsyncRobotState(self.robot_state_client)
         self._async_tasks = AsyncTasks([self._robot_state_task])
         self._lock = threading.Lock()
+
+        
 
         self._locked_messages = ['', '', '']  # string: displayed message for user
        
         self._estop_keepalive = None
         self._exit_check = None
 
-        # Stuff that is set in start()
+        
         self._robot_id = None
         self._lease_keepalive = None
+
+
+        # try:
+        #     robot_state = self.robot_state_client.get_robot_state()
+        #     print("Direct Robot State Fetch:", robot_state)
+        # except Exception as e:
+        #     print(f"Failed to fetch robot state directly: {e}")
 
     ################################### Initializing/Shutting Down Methods #############################################
     
     
     def start(self):
         """Begin communication with the robot."""
+
         # Construct our lease keep-alive object, which begins RetainLease calls in a thread.
         self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True,
                                                return_at_exit=True)
-
+        
         self._robot_id = self._robot.get_id()
         if self._estop_endpoint is not None:
             self._estop_endpoint.force_simple_setup(
@@ -153,48 +170,55 @@ class SpotControlInterface(object):
             self._lease_keepalive.shutdown()
         
         print('Spot Shutdown Command Completed')
-    
-    def _request_power_on(self):
-        request = PowerServiceProto.PowerCommandRequest.REQUEST_ON
-        return self._power_client.power_command_async(request)
         
-    def _power_motors(self):
-        """Powers the motors on in the robot. """
 
-        if self.motors_powered or not self.has_robot_control or not self.estop_keepalive or self.robot.is_powered_on(
-        ):
-            return
-
-        self.robot.power_on(timeout_sec=20)
-        assert self.robot.is_powered_on(), 'Robot power on failed.'
-        self.motors_powered = True
-
-    #DIRECTLY CALLED
     def _toggle_estop(self):
         """toggle estop on/off. Initial state is ON"""
         if self._estop_client is not None and self._estop_endpoint is not None:
             if not self._estop_keepalive:
                 self._estop_keepalive = EstopKeepAlive(self._estop_endpoint)
+                print('estop is inactive')
             else:
                 self._try_grpc('stopping estop', self._estop_keepalive.stop)
                 self._estop_keepalive.shutdown()
                 self._estop_keepalive = None
-
-    #DIRECTLY CALLED
+                print('estop is active')
+    
+    @property
+    def robot_state(self):
+        """Get latest robot state proto."""
+        state = self.robot_state_client.get_robot_state()
+        if state is None:
+            print("Robot state task proto is None")
+        return state
+    
+    def _request_power_on(self):
+        request = PowerServiceProto.PowerCommandRequest.REQUEST_ON
+        return self._power_client.power_command_async(request)
+    
+    
     def _toggle_power(self):
         '''  Checks for power state, if not available nothing occures, however if on or off the opposite action will occure (power on/off) '''
         power_state = self._power_state()
         if power_state is None:
-            self.add_message('Could not toggle power because power state is unknown')
+            print('Could not toggle power because power state is unknown')
             return
 
         if power_state == robot_state_proto.PowerState.STATE_OFF:
             self._try_grpc_async('powering-on', self._request_power_on)
 
         else:
-            self._try_grpc('powering-off', self._safe_power_off)
+            self._try_grpc('powering-off', self._robot._safe_power_off)
+        print('Power Command Completed')
+    
+    def _power_state(self):
+        state = self.robot_state
+        if not state:
+            print("Robot state is None")
+            return None
+        print("Robot state:", state)
+        return state.power_state.motor_power_state
 
-    #DIRECTLY CALLED
     def _toggle_lease(self):
         """toggle lease acquisition. Initial state is acquired"""
         if self._lease_client is not None:
@@ -204,11 +228,6 @@ class SpotControlInterface(object):
             else:
                 self._lease_keepalive.shutdown()
                 self._lease_keepalive = None
-
-    @property
-    def robot_state(self):
-        """Get latest robot state proto."""
-        return self._robot_state_task.proto
 
     def _try_grpc(self, desc, thunk):
         '''  PLACE HOLDER FOR EXPLANATION '''
@@ -220,7 +239,7 @@ class SpotControlInterface(object):
 
     
     def _try_grpc_async(self, desc, thunk):
-        '''  PLACE HOLDER FOR EXPLANATION '''
+        
         def on_future_done(fut):
             try:
                 fut.result()
@@ -231,9 +250,9 @@ class SpotControlInterface(object):
         future = thunk()
         future.add_done_callback(on_future_done)
         
-        ################################# Other Methods (Movement Related Etc.) #############################################
+################################# Other Methods (Movement Related Etc.) #############################################
     
-    # start allowing robot commands to happen
+
     def _start_robot_command(self, desc, command_proto, end_time_secs=None):
 
         def _start_command():
@@ -260,7 +279,6 @@ class SpotControlInterface(object):
 
 
 
-
 ################################################# ROS SUBSCRIPTION NODE ("Front-End") ######################################
 
 import rclpy
@@ -270,11 +288,13 @@ from std_msgs.msg import String
 import sys, select, termios, tty
 
 class KeySubscriber(Node):
-    def __init__(self, spot_interface):
+
+    def __init__(self):
+        
         super().__init__('key_subscriber')
+     
         self.subscription = self.create_subscription(String,'spot_keypress',self.listener_callback,10)
         self.get_logger().info('Keypress Subscriber Node has been started.')
-
         self.spot_interface = SpotControlInterface()
 
         self._command_dictionary = {
@@ -283,7 +303,7 @@ class KeySubscriber(Node):
             '\t': self.spot_interface.shutdown,      # Shut down and quit
             'p': self.spot_interface._toggle_power,  # Toggle power
             'l': self.spot_interface._toggle_lease,  # Toggle lease
-            's': self.spot_interface.start,          # Start
+            #'s': self.spot_interface.start,          # Start
             'r': self.spot_interface._self_right,    # Self right
             'v': self.spot_interface._sit,           # Sit
             'f': self.spot_interface._stand,         # Stand
@@ -293,28 +313,23 @@ class KeySubscriber(Node):
         """Run user commands at each update."""
         try:
             key = msg.data 
-            cmd_function = self.command_dictionary[key]
+            cmd_function = self._command_dictionary[key]
             cmd_function()
 
         except:
-            if key not in self.command_dictionary:
+            if key not in self._command_dictionary:
                 self.get_logger().info(f"Unrecognized keyboard command: '{key}'")
 
 def main(args=None):
+    
     rclpy.init(args=args)
+    
     key_subscriber = KeySubscriber()
 
     rclpy.spin(key_subscriber)
 
     key_subscriber.destroy_node()
     rclpy.shutdown()
-
-
-
-
-
-
-
 
 
 
@@ -385,5 +400,5 @@ def main(args=None):
 
 
 
-# if __name__ == '__main__':
-#     main()
+if __name__ == '__main__':
+     main()
