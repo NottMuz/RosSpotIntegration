@@ -27,19 +27,25 @@ from bosdyn.client.image import ImageClient
 from bosdyn.client.lease import Error as LeaseBaseError
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
 from bosdyn.client.power import PowerClient
-from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.time_sync import TimeSyncError
 from bosdyn.util import duration_str, format_metric, secs_to_hms
 from bosdyn.client.util import authenticate
 
+#for trajectory planning
+from bosdyn.client import math_helpers
+from bosdyn.api.basic_command_pb2 import RobotCommandFeedbackStatus
+from bosdyn.client.frame_helpers import (BODY_FRAME_NAME, ODOM_FRAME_NAME, VISION_FRAME_NAME,
+                                         get_se2_a_tform_b)
+from bosdyn.client.robot_command import (RobotCommandBuilder, RobotCommandClient,
+                                         block_for_trajectory_cmd, blocking_stand)
+
+
 LOGGER = logging.getLogger()
 
-
+#loading robot identification from environment
 from dotenv import load_dotenv
-
 load_dotenv()
-
 ROBOT_IP = os.getenv('ROBOT_IP')
 print(ROBOT_IP)
 USERNAME = os.getenv('SPOT_ROBOT_USERNAME')
@@ -52,10 +58,6 @@ def _grpc_or_log(desc, thunk):
         return thunk()
     except (ResponseError, RpcError) as err:
         LOGGER.error('Failed %s: %s', desc, err)
-
-
-
-
 
 class AsyncRobotState(AsyncPeriodicQuery):
   
@@ -88,59 +90,40 @@ class SpotControlInterface():
         sdk = bosdyn.client.create_standard_sdk('CircularPathingClient')
         robot = sdk.create_robot(ROBOT_IP)
         self._robot = robot
-        
-
+    
         try:
             robot.authenticate( USERNAME, PASSWORD)
-            #print('authenticate testing')
             robot.start_time_sync()
         except RpcError as err:
             LOGGER.error('Failed to communicate with robot: %s', err)
-            #return False
 
-
-        # Power client
         self._power_client = robot.ensure_client(PowerClient.default_service_name)
-        
-        # Create the lease client and grab the lease
         self._lease_client = robot.ensure_client(bosdyn.client.lease.LeaseClient.default_service_name)
-        
-        # Command client
         self._robot_command_client = robot.ensure_client(RobotCommandClient.default_service_name)
-        
-        # E-Stop client
+
         try:
             self._estop_client = self._robot.ensure_client(EstopClient.default_service_name)
             self._estop_endpoint = EstopEndpoint(self._estop_client, 'GNClient', 9.0)
+            #self._estop_keepalive = EstopKeepAlive(self._estop_endpoint)
         except:
             self._estop_client = None
             self._estop_endpoint = None
-        
-        # Robot state client
         self.robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
-        
-
-        self._robot_state_task = AsyncRobotState(self.robot_state_client)
-        self._async_tasks = AsyncTasks([self._robot_state_task])
+    
         self._lock = threading.Lock()
 
-        
-
         self._locked_messages = ['', '', '']  # string: displayed message for user
-       
         self._estop_keepalive = None
         self._exit_check = None
-
-        
         self._robot_id = None
         self._lease_keepalive = None
 
+        self.start()
+        self._toggle_estop()
+        self._toggle_power()
 
-        # try:
-        #     robot_state = self.robot_state_client.get_robot_state()
-        #     print("Direct Robot State Fetch:", robot_state)
-        # except Exception as e:
-        #     print(f"Failed to fetch robot state directly: {e}")
+
+        
 
     ################################### Initializing/Shutting Down Methods #############################################
     
@@ -148,48 +131,40 @@ class SpotControlInterface():
     def start(self):
         """Begin communication with the robot."""
 
+        self._lease = self._lease_client.take()
+        print("Lease forcefully taken.")
+        
         # Construct our lease keep-alive object, which begins RetainLease calls in a thread.
         self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True,
                                                return_at_exit=True)
         
         self._robot_id = self._robot.get_id()
+        
+        
         if self._estop_endpoint is not None:
             self._estop_endpoint.force_simple_setup(
             )  # Set this endpoint as the robot's sole estop.
 
         print('Spot Connection Command Completed')
-    
-
-    def shutdown(self):
-        """Release control of robot as gracefully as possible."""
-        self._sit()
-        if self._estop_keepalive:
-            # This stops the check-in thread but does not stop the robot.
-            self._estop_keepalive.shutdown()
-        if self._lease_keepalive:
-            self._lease_keepalive.shutdown()
         
-        print('Spot Shutdown Command Completed')
-        
-
     def _toggle_estop(self):
         """toggle estop on/off. Initial state is ON"""
         if self._estop_client is not None and self._estop_endpoint is not None:
             if not self._estop_keepalive:
                 self._estop_keepalive = EstopKeepAlive(self._estop_endpoint)
-                print('estop is inactive')
+                print('estop is active')
             else:
                 self._try_grpc('stopping estop', self._estop_keepalive.stop)
                 self._estop_keepalive.shutdown()
                 self._estop_keepalive = None
-                print('estop is active')
+                print('estop is inactive')
     
     @property
     def robot_state(self):
         """Get latest robot state proto."""
         state = self.robot_state_client.get_robot_state()
         if state is None:
-            print("Robot state task proto is None")
+            print("Robot state task proto is not available")
         return state
     
     def _request_power_on(self):
@@ -229,8 +204,20 @@ class SpotControlInterface():
                 self._lease_keepalive.shutdown()
                 self._lease_keepalive = None
 
+    def shutdown(self):
+        """Release control of robot as gracefully as possible."""
+        self._sit()
+        if self._estop_keepalive:
+            # This stops the check-in thread but does not stop the robot.
+            self._estop_keepalive.shutdown()
+        if self._lease_keepalive:
+            self._lease_keepalive.shutdown()
+
+        print('Spot Shutdown Completed')
+
+
     def _try_grpc(self, desc, thunk):
-        '''  PLACE HOLDER FOR EXPLANATION '''
+
         try:
             return thunk()
         except (ResponseError, RpcError, LeaseBaseError) as err:
@@ -239,7 +226,7 @@ class SpotControlInterface():
 
     
     def _try_grpc_async(self, desc, thunk):
-        
+
         def on_future_done(fut):
             try:
                 fut.result()
@@ -275,6 +262,119 @@ class SpotControlInterface():
 
 
 
+################################################## Trajectory Planning #######################################################
+    def _forward_line_trajectory(self):
+        print("Completed forward trajectory.")
+        frame_name = ODOM_FRAME_NAME
+
+        traj_dx = 1 # [meters]
+
+        traj_dy = 0  # [meters]
+
+        traj_dyaw = math.pi # [degrees] ccw
+
+        ending_time = 20 # [seconds]
+
+        try:
+            return self.trajectory_planner(traj_dx, traj_dy, traj_dyaw, frame_name, ending_time)
+        finally:
+            # Send a Stop at the end, regardless of what happened.
+            self._robot_command_client.robot_command(RobotCommandBuilder.stop_command())
+    
+
+
+    def _circle_trajectory(self):
+        frame_name = ODOM_FRAME_NAME
+
+        # Define the circle parameters
+        radius = 0.5# [meters]
+        total_time = 200 # [seconds] Total time to complete the circle
+        steps = 30# Number of steps for the full circle
+
+        # Calculate the angular increment per step
+        angle_increment = 2 * math.pi / steps
+
+        # Calculate time per step
+        time_per_step = total_time / steps
+
+        for i in range(steps):
+            # Calculate the incremental dx, dy, dyaw for each step
+            total_angle = i * angle_increment
+            dx = radius * math.cos(total_angle)
+            dy = radius * math.sin(total_angle)
+            if i < steps - 1:
+                next_angle = (i + 1) * angle_increment
+                next_dx = radius * math.cos(next_angle)
+                next_dy = radius * math.sin(next_angle)
+                dyaw = math.atan2(next_dy - dy, next_dx - dx)
+            else:
+                dyaw = 0
+            # Plan the small segment of the trajectory
+            self.trajectory_planner(dx, dy, dyaw, frame_name, time_per_step)
+
+        print("Completed circular trajectory")
+    
+
+    def trajectory_planner(self, dx, dy, dyaw, frame_name, ending_time):
+
+        
+        #get the current transformation snapshot (provides us with Spot's pose relative to the different frames)
+        transforms = self.robot_state_client.get_robot_state().kinematic_state.transforms_snapshot
+
+        print(dyawS)
+        #sets the end goal of where we want Spot to be, as well as its orientation
+        body_tform_goal = math_helpers.SE2Pose(x=dx, y=dy, angle=dyaw)
+        #print("body transform goal:", body_tform_goal)
+        
+        #converts the pose from the bodyframe to the designated 'global' frame (ODOM or VISION)
+        out_tform_body = get_se2_a_tform_b(transforms, frame_name, BODY_FRAME_NAME)
+
+        # Check if the transform was found
+        if out_tform_body is None:
+            print(f"Error: No transform found between {frame_name} and {BODY_FRAME_NAME}.")
+            return False
+        else:
+            print("Output transform body:", out_tform_body)
+
+        #convert the goal pose from the BODY to the desired 'global' frame (ODOM or VISION);'
+        out_tform_goal = out_tform_body * body_tform_goal
+        #print('output transform goal:', out_tform_goal)
+
+        #builds the trajectory command based on the above transforms
+        robot_cmd = RobotCommandBuilder.synchro_se2_trajectory_point_command(
+            goal_x=out_tform_goal.x, goal_y=out_tform_goal.y, goal_heading=out_tform_goal.angle,
+            frame_name=frame_name)
+
+        #send the command
+        end_time = ending_time
+        cmd_id = self._robot_command_client.robot_command(command=robot_cmd,
+                                                           end_time_secs=time.time() + end_time)
+
+
+        #Wait until the robot has reached the goal.
+        while True:
+            feedback = self._robot_command_client.robot_command_feedback(cmd_id)
+            mobility_feedback = feedback.feedback.synchronized_feedback.mobility_command_feedback
+            if mobility_feedback.status != RobotCommandFeedbackStatus.STATUS_PROCESSING:
+                print('Failed to reach the goal')
+                return False
+            traj_feedback = mobility_feedback.se2_trajectory_feedback
+            if (traj_feedback.status == traj_feedback.STATUS_AT_GOAL and
+                    traj_feedback.body_movement_status == traj_feedback.BODY_STATUS_SETTLED):
+                print('Arrived at the goal.')
+
+                transforms = self.robot_state_client.get_robot_state().kinematic_state.transforms_snapshot
+                out_tform_body = get_se2_a_tform_b(transforms, frame_name, BODY_FRAME_NAME)
+                #print("Output transform body after completion:", out_tform_body)
+                #print('output transform goal after completion:', out_tform_goal)
+
+                return True
+            time.sleep(1)
+            
+        return True
+
+
+
 
 
 
@@ -298,15 +398,17 @@ class KeySubscriber(Node):
         self.spot_interface = SpotControlInterface()
 
         self._command_dictionary = {
-            'w': self.spot_interface._stop,          # Stop moving
-            ' ': self.spot_interface._toggle_estop,  # Toggle estop
-            '\t': self.spot_interface.shutdown,      # Shut down and quit
-            'p': self.spot_interface._toggle_power,  # Toggle power
-            'l': self.spot_interface._toggle_lease,  # Toggle lease
-            #'s': self.spot_interface.start,          # Start
-            'r': self.spot_interface._self_right,    # Self right
-            'v': self.spot_interface._sit,           # Sit
-            'f': self.spot_interface._stand,         # Stand
+            'w': self.spot_interface._stop,              # Stop moving
+            ' ': self.spot_interface._toggle_estop,      # Toggle estop
+            '\t': self.spot_interface.shutdown,          # Shut down and quit
+            'p': self.spot_interface._toggle_power,      # Toggle power
+            'l': self.spot_interface._toggle_lease,      # Toggle lease
+            's': self.spot_interface.start,              # Start
+            'r': self.spot_interface._self_right,        # Self right
+            'v': self.spot_interface._sit,               # Sit
+            'f': self.spot_interface._stand,             # Stand
+            'c': self.spot_interface._circle_trajectory, # Circle trajectory
+            'y': self.spot_interface._forward_line_trajectory    # Forward. trajectory
         }
 
     def listener_callback(self, msg):

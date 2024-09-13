@@ -10,31 +10,22 @@ import sys, select, termios, tty
 settings = termios.tcgetattr(sys.stdin)
 
 msg = """
-
 Commands: 
-[TAB]: Shut down and quit
-[SPACE]: Estop, [P]: Power
-[ESC]: Stop, [s] Start Connection With Spot
+   [b]  : Begin controlling Spot (auto. turn on power, 
+   toggle Estop, and take lease)
+   
+   [s]  : Take Lease Set Estop Endpoint
+ [SPACE]: Toggle Estop
+   [p]  : Toggle Power
+  [TAB] : Shut Down & Quit
 
-
-[f]: Stand, [r]: Self-right
-[v]: Sit , [w]: Stop
-
+[f]: Stand
+[r]: Self-right
+[v]: Sit
+[w]: Stop Moving
 
 CTRL-C to quit
 """
-
-moveBindings = {
-		' ': 1, # toggle estop
-		'\t': 2, # shut down and quit
-		'p': 3, # toggle power
-		'l': 4, # toggle lease
-		'r': 5, # self right
-		'v': 6, # sit
-		'f': 7, # stand
-		's': 8, # start
-		'w': 9, # Stop moving
-	       }
 
 def getKey():
     #enter is not required, takes the raw inputs from the keyboards
