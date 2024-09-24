@@ -40,10 +40,14 @@ from bosdyn.client.frame_helpers import (BODY_FRAME_NAME, ODOM_FRAME_NAME, VISIO
 from bosdyn.client.robot_command import (RobotCommandBuilder, RobotCommandClient,
                                          block_for_trajectory_cmd, blocking_stand)
 
+
+
+
+
 # Define the circle parameters
 radius = 0.5# [meters]
-total_time = 600 # [seconds] Total time to complete the circle
-steps = 100# Number of steps for the full circle
+total_time = 400 # [seconds] Total time to complete the circle
+steps = 16# Number of steps for the full circle
 
 # Calculate the angular increment per step
 angle_increment = 2 * math.pi / steps
@@ -51,21 +55,264 @@ angle_increment = 2 * math.pi / steps
 # Calculate time per step
 time_per_step = total_time / steps
 
+counter = 0
+
 for i in range(steps):
-    # Calculate the incremental dx, dy, dyaw for each step
-    total_angle = i * angle_increment
-    dx = radius * math.cos(total_angle)
-    dy = radius * math.sin(total_angle)
-    print('dx, dy:', dx, dy)
-    if i < steps - 1:
-        next_angle = (i + 1) * angle_increment
-        next_dx = radius * math.cos(next_angle)
-        next_dy = radius * math.sin(next_angle)
-        print('next dx, next dy:', next_dx, next_dy)
-        print('Vab =' ,next_dx - dx, next_dy - dy )
-        dyaw = math.atan2(next_dx - dx, next_dy - dy)
-        print('dyaw :', dyaw)
-        print('\n')
-    else:
+
+
+    #first setpoint
+    if  i == 0 :
+
+        print(i)
+        total_angle = 0
+        body_frame_dx = 0
+        body_frame_dy = 0
         dyaw = 0
-    # Plan the small segment of the trajectory
+
+    #remaining setpoints
+    elif i > 0: 
+
+        ''' -------------------------------------------------------   QUADRANT A   ----------------------------------------------------------------'''
+        if i <= steps/4 and i < steps - 1 :
+
+            # second setpoint
+            if i == 1: 
+
+                total_angle = i * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+                
+
+                #Current Position
+                prev_angle = 0
+                current_x = radius
+                current_y = 0
+
+                body_frame_dx = wanted_y
+                body_frame_dy = ((-1) *(wanted_x - current_x))
+                
+                #opp/adj
+                dyaw = math.atan2(body_frame_dy, body_frame_dy)
+
+
+            #remaining setpoints
+            else:
+                total_angle = i * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+               
+
+                #Current Position
+                current_angle = (i - 1) * angle_increment
+                current_x = radius * math.cos(current_angle)
+                current_y = radius * math.sin(current_angle)
+                print('Current X, Y:       ',current_x, current_y)
+
+                #Previous Position
+                prev_angle = (i - 2) * angle_increment
+                prev_x = radius * math.cos(prev_angle)
+                prev_y = radius * math.sin(prev_angle)
+                print('Prev dX, dY:        ',prev_x, prev_y)
+
+
+                #vector/hypotnuese from current point --> desired point
+                c = math.sqrt( pow( ((-1) *(wanted_x - current_x)),2) + pow((wanted_y - current_y),2))
+                
+                #dyaw = theta(next_total) - theta(old_increment)
+                dyaw =  math.atan2( ((-1) *(wanted_x - current_x)), wanted_y - current_y) - math.atan2((-1*(current_x - prev_x)), current_y - prev_y)
+
+                # Plan the small segment of the trajectory
+                body_frame_dx = c * math.cos(dyaw)
+                body_frame_dy = c * math.sin(dyaw)
+
+        ''' -------------------------------------------------------   QUADRANT S  ----------------------------------------------------------------'''
+        if i > round(steps/4) and i <= round(steps/2) :
+
+
+            # second setpoint
+            if i == round(steps/4) + 1: 
+
+                j = 1
+                total_angle = j * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+
+                #Current Position
+                prev_angle = 0
+                current_x = radius
+                current_y = 0
+
+                body_frame_dx = wanted_y
+                body_frame_dy = (-1) *(wanted_x - current_x)
+                
+                #opp/adj
+                dyaw = math.atan2(body_frame_dy, body_frame_dy)
+
+                j += 1
+
+
+            #remaining setpoints
+            else:
+
+                total_angle = j * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+
+                #Current Position   
+                current_angle = (j - 1) * angle_increment
+                current_x = radius * math.cos(current_angle)
+                current_y = radius * math.sin(current_angle)
+                print('Current X, Y:       ',current_x, current_y)
+
+                #Previous Position
+                prev_angle = (j - 2) * angle_increment
+                prev_x = radius * math.cos(prev_angle)
+                prev_y = radius * math.sin(prev_angle)
+                print('Prev dX, dY:        ',prev_x, prev_y)
+
+
+                #vector/hypotnuese from current point --> desired point
+                c = math.sqrt( pow( ((-1) *(wanted_x - current_x)),2) + pow((wanted_y - current_y),2))
+                
+                #dyaw = theta(next_total) - theta(old_increment)
+                dyaw =  math.atan2(((-1) *(wanted_x - current_x)), wanted_y - current_y) - math.atan2((-1*(current_x - prev_x)), current_y - prev_y)
+
+                # Plan the small segment of the trajectory
+                body_frame_dx = c * math.cos(dyaw)
+                body_frame_dy = c * math.sin(dyaw)
+
+                j += 1
+
+
+        ''' -------------------------------------------------------   QUADRANT T    ----------------------------------------------------------------'''
+        if i > round(steps/2) and i <= round(steps * 0.75) :
+
+
+            # second setpoint
+            if i == round(steps/2) + 1: 
+
+                j = 1
+                total_angle = j * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+
+                #Current Position
+                prev_angle = 0
+                current_x = radius
+                current_y = 0
+
+                body_frame_dx = wanted_y
+                body_frame_dy = (-1) *(wanted_x - current_x)
+                
+                #opp/adj
+                dyaw = math.atan2(body_frame_dy, body_frame_dy)
+
+                j += 1
+
+
+            #remaining setpoints
+            else:
+
+                total_angle = j * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+
+                #Current Position   
+                current_angle = (j - 1) * angle_increment
+                current_x = radius * math.cos(current_angle)
+                current_y = radius * math.sin(current_angle)
+                print('Current X, Y:       ',current_x, current_y)
+
+                #Previous Position
+                prev_angle = (j - 2) * angle_increment
+                prev_x = radius * math.cos(prev_angle)
+                prev_y = radius * math.sin(prev_angle)
+                print('Prev dX, dY:        ',prev_x, prev_y)
+
+
+                #vector/hypotnuese from current point --> desired point
+                c = math.sqrt( pow( ((-1) *(wanted_x - current_x)),2) + pow((wanted_y - current_y),2))
+                
+                #dyaw = theta(next_total) - theta(old_increment)
+                dyaw =  math.atan2(((-1) *(wanted_x - current_x)), wanted_y - current_y) - math.atan2((-1*(current_x - prev_x)), current_y - prev_y)
+
+                # Plan the small segment of the trajectory
+                body_frame_dx = c * math.cos(dyaw)
+                body_frame_dy = c * math.sin(dyaw)
+
+                j += 1
+            
+        ''' -------------------------------------------------------   QUADRANT C     ----------------------------------------------------------------'''
+        if i >= round(steps * 0.75) and i < steps - 1:
+
+            # second setpoint
+            if i == round(steps*0.75) + 1: 
+
+                j = 1
+                total_angle = j * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+
+                #Current Position
+                prev_angle = 0
+                current_x = radius
+                current_y = 0
+
+                body_frame_dx = wanted_y
+                body_frame_dy = (-1) *(wanted_x - current_x)
+                
+                #opp/adj
+                dyaw = math.atan2(body_frame_dy, body_frame_dy)
+
+                j += 1
+
+
+            #remaining setpoints
+            else:
+
+                total_angle = j * angle_increment
+                wanted_x = radius * math.cos(total_angle)
+                wanted_y = radius * math.sin(total_angle)
+                print('Wanted X & Y Pos:', wanted_x, wanted_y )
+
+                #Current Position   
+                current_angle = (j - 1) * angle_increment
+                current_x = radius * math.cos(current_angle)
+                current_y = radius * math.sin(current_angle)
+                print('Current X, Y:       ',current_x, current_y)
+
+                #Previous Position
+                prev_angle = (j - 2) * angle_increment
+                prev_x = radius * math.cos(prev_angle)
+                prev_y = radius * math.sin(prev_angle)
+                print('Prev dX, dY:        ',prev_x, prev_y)
+
+
+                #vector/hypotnuese from current point --> desired point
+                c = math.sqrt( pow((wanted_x - current_x),2) + pow((wanted_y - current_y),2))
+                
+                #dyaw = theta(next_total) - theta(old_increment)
+                dyaw =  math.atan2(((-1) *(wanted_x - current_x)), wanted_y - current_y) - math.atan2((-1*(current_x - prev_x)), current_y - prev_y)
+
+                # Plan the small segment of the trajectory
+                body_frame_dx = c * math.cos(dyaw)
+                body_frame_dy = c * math.sin(dyaw)
+
+                j += 1
+        
+
+
+
+        print('Body Frame dX & dY: ', body_frame_dx, body_frame_dy)
+
+        print(f"Counter value : {i}")
+        counter+=1
+
+        print('Passed Angle [rad]:',dyaw , '\n')

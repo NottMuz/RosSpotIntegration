@@ -19,10 +19,10 @@ Commands:
    [p]  : Toggle Power
   [TAB] : Shut Down & Quit
 
-[f]: Stand
-[r]: Self-right
-[v]: Sit
-[w]: Stop Moving
+ [f]: Stand
+ [r]: Self-right
+ [v]: Sit
+ [w]: Stop Moving
 
 CTRL-C to quit
 """
